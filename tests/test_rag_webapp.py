@@ -7,7 +7,11 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from examples.rag_webapp import ingest
 
 
-def test_ingest_and_query(tmp_path: Path, monkeypatch):
+import pytest
+
+
+@pytest.mark.parametrize("provider", ["groq", "ollama", "localai", "openrouter"])
+def test_ingest_and_query(tmp_path: Path, monkeypatch, provider: str):
     source = tmp_path / "docs"
     source.mkdir()
     (source / "test.md").write_text("Hello world")
@@ -20,6 +24,7 @@ def test_ingest_and_query(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("EMBEDDING_MODEL", "fake")
     monkeypatch.setenv("HUGGINGFACEHUB_API_TOKEN", "dummy")
     monkeypatch.setenv("USE_FAKE_LLM", "true")
+    monkeypatch.setenv("LLM_PROVIDER", provider)
     monkeypatch.setenv("API_TOKEN", "secret")
 
     from examples.rag_webapp import app as web_app

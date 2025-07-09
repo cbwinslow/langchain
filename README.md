@@ -81,3 +81,31 @@ snippets for topics such as tool calling, RAG use cases, and more.
 concepts behind the LangChain framework.
 - [API Reference](https://python.langchain.com/api_reference/): Detailed reference on
 navigating base packages and integrations for LangChain.
+
+## One-Click Installer
+
+Run `scripts/one_click_install.sh` to start the example Docker services.
+The script checks for Docker and docker-compose prerequisites, and if the
+installation fails it invokes an AI agent powered by the selected LLM
+provider (Groq, Ollama, LocalAI or OpenRouter) to help troubleshoot.
+Set the `LLM_PROVIDER` environment variable to choose the provider.
+
+### Provider Configuration Examples
+
+Use one of the following environment settings when running the installer or the
+web app:
+
+- `LLM_PROVIDER=groq` – uses Groq with your API key
+- `LLM_PROVIDER=ollama` – uses a local Ollama model
+- `LLM_PROVIDER=localai` – for LocalAI deployments
+- `LLM_PROVIDER=openrouter` – via OpenRouter API
+
+### React RAG Dashboard
+
+The `webapp/astro-app` directory contains a React + Astro dashboard for querying
+and ingesting data. Start it with `npm install && npm run dev` from that folder.
+The dashboard proxies requests to the FastAPI service and provides a simple RAG
+interface.
+
+LangGraph and LangSmith are enabled automatically if the corresponding
+environment variables (`LANGSMITH_API_KEY` etc.) are present.
