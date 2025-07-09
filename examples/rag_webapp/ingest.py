@@ -7,9 +7,11 @@ Based on LangChain documentation for `ElasticsearchStore` and `Weaviate` in
 
 import argparse
 import os
+import tempfile
 from pathlib import Path
 
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from langchain_community.document_loaders import PyPDFLoader
 try:
     from langchain.text_splitters import RecursiveCharacterTextSplitter
 except Exception:  # pragma: no cover - fallback for splitters package
@@ -58,27 +60,50 @@ def ingest(
             model_name=embedding_model,
             model_kwargs={"device": "cpu"},
         )
-    if store_type == "chroma":
-        vectordb = Chroma.from_documents(splits, embeddings, persist_directory=persist_dir)
-    elif store_type == "elastic" and ElasticsearchStore is not None:
-        vectordb = ElasticsearchStore.from_documents(
-            splits,
-            embeddings,
-            es_url=os.getenv("ES_URL", "http://localhost:9200"),
-            index_name=os.getenv("ES_INDEX", "langchain_index"),
-        )
-    elif store_type == "weaviate" and Weaviate is not None:
-        vectordb = Weaviate.from_documents(
-            splits,
-            embeddings,
-            weaviate_url=os.getenv("WEAVIATE_URL", "http://localhost:8080"),
-        )
-    else:
-        raise ValueError(f"Unsupported store type: {store_type}")
+    try:
+        if store_type == "chroma":
+            vectordb = Chroma.from_documents(splits, embeddings, persist_directory=persist_dir)
+        elif store_type == "elastic":
+            if ElasticsearchStore is None:
+                raise RuntimeError("Elasticsearch dependencies are missing")
+            vectordb = ElasticsearchStore.from_documents(
+                splits,
+                embeddings,
+                es_url=os.getenv("ES_URL", "http://localhost:9200"),
+                index_name=os.getenv("ES_INDEX", "langchain_index"),
+            )
+        elif store_type == "weaviate":
+            if Weaviate is None:
+                raise RuntimeError("Weaviate dependencies are missing")
+            vectordb = Weaviate.from_documents(
+                splits,
+                embeddings,
+                weaviate_url=os.getenv("WEAVIATE_URL", "http://localhost:8080"),
+            )
+        else:
+            raise ValueError(f"Unsupported store type: {store_type}")
+    except Exception as exc:
+        raise RuntimeError(f"Failed to create vector store: {exc}") from exc
     vectordb.persist()
     print(
         f"Loaded {doc_count} files -> {len(splits)} chunks. Ingested into {store_type} store at {persist_dir}"
     )
+
+
+def ingest_text_content(text: str, persist_dir: str, store_type: str, embedding_model: str) -> None:
+    """Ingest raw text content into the vector store."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_file = Path(tmpdir) / "input.md"
+        tmp_file.write_text(text, encoding="utf-8")
+        ingest(tmpdir, persist_dir, store_type, embedding_model)
+
+
+def ingest_pdf_file(path: str, persist_dir: str, store_type: str, embedding_model: str) -> None:
+    """Ingest a PDF file into the vector store."""
+    loader = PyPDFLoader(path)
+    docs = loader.load()
+    text = "\n".join(d.page_content for d in docs)
+    ingest_text_content(text, persist_dir, store_type, embedding_model)
 
 
 def main() -> None:

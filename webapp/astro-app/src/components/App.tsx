@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
+import RagDashboard from './RagDashboard';
 
-const TABS = ['Spreadsheet', 'DB Viewer', 'Query Writer', 'Scripts', 'Settings'];
+const TABS = ['Spreadsheet', 'DB Viewer', 'Query Writer', 'Scripts', 'RAG', 'Settings'];
 
 export default function App() {
   const [tab, setTab] = useState('Spreadsheet');
@@ -24,6 +25,7 @@ export default function App() {
         {tab === 'DB Viewer' && <p>SQL database viewer goes here.</p>}
         {tab === 'Query Writer' && <p>Query writing tools go here.</p>}
         {tab === 'Scripts' && <p>Script toolkit for API scraping goes here.</p>}
+        {tab === 'RAG' && <RagDashboard />}
         {tab === 'Settings' && <p>User profile and DB config settings.</p>}
       </div>
     </div>
