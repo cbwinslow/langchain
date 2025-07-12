@@ -40,22 +40,27 @@ class AnswerGenerationAgent(Agent):
 
             query = data["query"]
             retrieved_chunks = data["retrieved_chunks"] # List[Dict[str, Any]]
-            model_name = data.get("llm_model_name") # Uses default from LLMService if None
+
+            # Decide on a default model if none is provided in the task
+            default_model = None
+            if self.llm_service.openrouter_client:
+                default_model = "mistralai/mistral-7b-instruct" # Default to a capable OpenRouter model
+            elif self.llm_service.ollama_client:
+                default_model = "ollama/llama3" # Fallback to Ollama if OpenRouter is not available
+
+            model_name = data.get("llm_model_name", default_model)
+
+            if not model_name:
+                return {"status": "error", "message": "No LLM model specified and no default could be set (neither OpenRouter nor Ollama is configured)."}
 
             try:
-                print(f"{self.name}: Generating answer for query: '{query}' using {len(retrieved_chunks)} context chunks.")
+                print(f"{self.name}: Generating answer for query: '{query}' using {len(retrieved_chunks)} context chunks with model '{model_name}'.")
 
-                if model_name:
-                    answer = self.llm_service.generate_answer_from_context(
-                        query=query,
-                        retrieved_chunks=retrieved_chunks,
-                        model_name=model_name
-                    )
-                else:
-                    answer = self.llm_service.generate_answer_from_context(
-                        query=query,
-                        retrieved_chunks=retrieved_chunks
-                    )
+                answer = self.llm_service.generate_answer_from_context(
+                    query=query,
+                    retrieved_chunks=retrieved_chunks,
+                    model_name=model_name
+                )
 
                 return {
                     "status": "success",
