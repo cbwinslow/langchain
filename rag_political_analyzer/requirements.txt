@@ -1,0 +1,19 @@
+fastapi
+uvicorn[standard]
+requests
+spacy
+openrouter # Corrected again
+sentence-transformers
+psycopg2-binary
+pgvector
+python-dotenv
+aiohttp
+pypdf2
+python-docx
+tiktoken
+langchain-core
+langchain-community
+langchain-text-splitters
+pytest
+pydantic
+pandas
