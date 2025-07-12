@@ -20,42 +20,82 @@ app = FastAPI(
 )
 
 # --- Global Components & State ---
-# In a production app, this state might be managed differently (e.g., Redis)
-# For now, a simple dict to track the status of background tasks.
 background_tasks_status = {}
+orchestrator_instance: Optional[Any] = None # Will hold our main agent
 
-# Initialize core services on startup
-# This is a simplified approach. Dependency injection frameworks would be better for larger apps.
-try:
-    print("Initializing core components...")
-    embedding_model = get_embeddings_model()
+@app.on_event("startup")
+async def startup_event():
+    """Initializes all agents and services when the API starts."""
+    global orchestrator_instance
+    print("API Startup: Initializing agent framework...")
     try:
-        sample_emb = embedding_model.embed_query("test")
-        emb_dim = len(sample_emb)
-    except Exception:
-        emb_dim = 384 # Fallback
+        # Core Components
+        embedding_model = get_embeddings_model()
+        try:
+            emb_dim = len(embedding_model.embed_query("test"))
+        except Exception:
+            emb_dim = 384
 
-    vector_store = CodeDocVectorStore(embedding_dimension=emb_dim)
-    llm_service = LLMService() # Assumes .env is configured
-    print("Core components initialized successfully.")
-except Exception as e:
-    print(f"FATAL: Failed to initialize core components: {e}")
-    # Set to None so endpoints can fail gracefully
-    vector_store = None
-    llm_service = None
-    embedding_model = None
+        vector_store = CodeDocVectorStore(embedding_dimension=emb_dim)
+        llm_service = LLMService()
+
+        # Agents
+        # For simplicity, memory agent is still using the old file-based system
+        from app.agents.memory_agent import MemoryAgent
+        memory_agent = MemoryAgent()
+
+        from app.agents.ingestion_agent import IngestionAgent
+        ingestion_agent = IngestionAgent(vector_store=vector_store, embedding_model=embedding_model)
+
+        # The other agents (Retrieval, AnswerGen) would be initialized here too
+        # For now, let's assume they are part of a full orchestrator setup
+        from app.agents.orchestrator_agent import OrchestratorAgent
+        # A full orchestrator would need all agents, but for ingestion we only need the ingestion agent
+        # This highlights a potential need to refactor the orchestrator or have multiple specialized orchestrators
+
+        # For now, we will create a "dummy" orchestrator for the background task
+        # that can call the ingestion agent. A better approach is a full orchestrator init.
+        # Let's just initialize the IngestionAgent and call it directly from the background task
+        # to simplify and avoid circular dependencies for this step.
+        app.state.ingestion_agent = ingestion_agent
+        print("Core components and IngestionAgent initialized successfully.")
+
+    except Exception as e:
+        print(f"FATAL: Failed to initialize components: {e}")
+        app.state.ingestion_agent = None
 
 # --- Helper Function for Background Ingestion ---
 def run_ingestion_task(task_id: str, start_url: str, depth: int, max_pages: int):
     """The function that will be run in the background by FastAPI."""
+    # This function runs in a separate thread, so it can't access app.state directly
+    # A more robust solution involves a shared message queue (e.g., Redis, Celery)
+    # For this project, we'll re-initialize the necessary components here.
+    # This is less efficient but works for a simple background task model.
+    print(f"Background task {task_id} started for URL: {start_url}")
     try:
         background_tasks_status[task_id] = "running"
-        pipeline = IngestionPipeline() # Re-initialize pipeline components in the new process/thread
-        asyncio.run(pipeline.run_for_url(start_url, depth, max_pages))
-        background_tasks_status[task_id] = "completed"
+
+        # Re-initialize components for this thread
+        embedding_model = get_embeddings_model()
+        try: emb_dim = len(embedding_model.embed_query("test"))
+        except: emb_dim = 384
+        vector_store = CodeDocVectorStore(embedding_dimension=emb_dim)
+        from app.agents.ingestion_agent import IngestionAgent
+        ingestion_agent = IngestionAgent(vector_store=vector_store, embedding_model=embedding_model)
+
+        # Create and run the task
+        task = {"type": "ingest_from_url", "data": {"start_url": start_url, "crawl_depth": depth, "max_pages": max_pages}}
+        result = asyncio.run(ingestion_agent.execute(task))
+
+        if result.get("status") == "success":
+            background_tasks_status[task_id] = f"completed: {result.get('message')}"
+        else:
+            background_tasks_status[task_id] = f"failed: {result.get('message')}"
+
     except Exception as e:
+        error_msg = f"failed: {str(e)}"
         print(f"Background ingestion task {task_id} failed: {e}")
-        background_tasks_status[task_id] = f"failed: {str(e)}"
+        background_tasks_status[task_id] = error_msg
 
 # --- Pydantic Models for API ---
 class CrawlRequest(BaseModel):

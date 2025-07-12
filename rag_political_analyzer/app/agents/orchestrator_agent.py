@@ -116,24 +116,25 @@ class OrchestratorAgent(Agent):
                 "retrieval_details": retrieval_result # Pass along for transparency
             }
 
-        elif task_type == "ingest_file":
-            file_path = data.get("file_path")
-            if not file_path:
-                return {"status": "error", "message": "File path missing for ingest_file task."}
+        elif task_type == "ingest_from_url":
+            # The data here should be {"start_url": ..., "crawl_depth": ..., "max_pages": ...}
+            if not data or "start_url" not in data:
+                return {"status": "error", "message": "start_url missing for ingest_from_url task."}
 
-            ingestion_task = {"type": "ingest_document", "data": {"file_path": file_path}}
-            ingestion_result = await self.ingestion_agent.execute(ingestion_task)
+            # The IngestionAgent now handles the full pipeline.
+            # The task structure for the agent is the same as what we receive.
+            ingestion_result = await self.ingestion_agent.execute(task)
 
-            # Store result of ingestion (e.g., as a system log or fact)
+            # Log the result of the ingestion task
             await self.memory_agent.execute({
                 "type": "store_fact",
                 "data": {
-                    "key": f"ingestion_{os.path.basename(file_path)}_{user_id}",
+                    "key": f"ingestion_{data['start_url']}_{user_id}",
                     "value": ingestion_result,
                     "category": "system_logs"
                 }
             })
-            return ingestion_result # Return the direct result from IngestionAgent
+            return ingestion_result # Return the direct result from the agent
 
         else:
             return {"status": "error", "message": f"Unknown task type for OrchestratorAgent: {task_type}"}
