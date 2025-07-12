@@ -59,53 +59,6 @@ def verify_token(x_api_token: str | None = Header(None)) -> str | None:
     return x_api_token
 
 
-def get_llm() -> "BaseLLM":
-    """Return an LLM based on environment configuration."""
-    use_fake = os.environ.get("USE_FAKE_LLM", "false").lower() == "true"
-    provider = os.environ.get("LLM_PROVIDER", "ollama").lower()
-    if use_fake:
-        return FakeLLM()
-    if provider == "groq" and ChatGroq is not None:
-        return ChatGroq()
-    if provider == "ollama" and OllamaLLM is not None:
-        return OllamaLLM(model=os.getenv("OLLAMA_MODEL", "llama3"))
-    if provider == "localai" and ChatLocalAI is not None:
-        return ChatLocalAI()
-    if provider == "openrouter" and ChatOpenRouter is not None:
-        return ChatOpenRouter()
-    return HuggingFaceHub(repo_id="google/flan-t5-base", model_kwargs={"temperature": 0})
-
-db_dir = os.environ.get("PERSIST_DIR", "chroma_db")
-embedding_model = os.environ.get("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-if embedding_model == "fake":
-    embedding = FakeEmbeddings(size=10)
-else:
-    embedding = HuggingFaceEmbeddings(model_name=embedding_model)
-
-store_type = os.environ.get("VECTOR_STORE_TYPE", "chroma")
-try:
-    if store_type == "chroma":
-        store = Chroma(persist_directory=db_dir, embedding_function=embedding)
-    elif store_type == "elastic":
-        if ElasticsearchStore is None:
-            raise RuntimeError("Elasticsearch dependencies are missing")
-        store = ElasticsearchStore(
-            es_url=os.getenv("ES_URL", "http://localhost:9200"),
-            index_name=os.getenv("ES_INDEX", "langchain_index"),
-            embedding=embedding,
-        )
-    elif store_type == "weaviate":
-        if Weaviate is None:
-            raise RuntimeError("Weaviate dependencies are missing")
-        store = Weaviate(
-            url=os.getenv("WEAVIATE_URL", "http://localhost:8080"),
-            index_name=os.getenv("WEAVIATE_INDEX", "LangChain")
-        )
-    else:
-        raise ValueError(f"Unsupported store type: {store_type}")
-except Exception as exc:
-    raise RuntimeError(f"Failed to initialize vector store: {exc}") from exc
-
 # --- Global Configuration State ---
 # These will be initialized from environment variables on startup,
 # and can be updated via the /settings/update endpoint.
@@ -208,6 +161,8 @@ get_active_vector_store()
 
 
 # --- Settings Endpoints ---
+from typing import Optional
+
 class SettingsModel(BaseModel):
     LLM_PROVIDER: Optional[str] = None
     OLLAMA_MODEL: Optional[str] = None
@@ -365,7 +320,6 @@ async def agent_wikipedia(q: Query, _: str | None = Depends(verify_token)):
 from langchain_community.utilities import SQLDatabase
 from langchain_community.agent_toolkits import create_sql_agent
 from langchain_core.pydantic_v1 import BaseModel as PydanticV1BaseModel
-from typing import Optional
 
 # --- SQL Agent Demo ---
 DB_PATH = "sample_company.db"

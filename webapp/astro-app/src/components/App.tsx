@@ -27,8 +27,9 @@ export default function App() {
         <div className="bg-white rounded-b-lg rounded-r-lg shadow-md border border-gray-200 p-6">
           {tab === 'Chat' && <RagDashboard />}
           {tab === 'Agents' && <AgentsDashboard />}
-        {tab === 'Cookbook' && <CookbookDashboard />}
-        {tab === 'Settings' && <SettingsDashboard />}
+          {tab === 'Cookbook' && <CookbookDashboard />}
+          {tab === 'Settings' && <SettingsDashboard />}
+        </div>
       </div>
     </div>
   );
