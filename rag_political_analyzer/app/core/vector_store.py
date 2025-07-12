@@ -1,229 +1,269 @@
 # app/core/vector_store.py
 import os
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import execute_values, Json
 from pgvector.psycopg2 import register_vector
 from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
-load_dotenv(dotenv_path='../.env') # Assuming .env is in rag_political_analyzer directory
+# --- Configuration ---
+load_dotenv(dotenv_path='../.env')
 
-# Database connection parameters - should be loaded from environment variables
 DB_NAME = os.getenv("DB_NAME", "rag_db")
 DB_USER = os.getenv("DB_USER", "rag_user")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "rag_password")
-DB_HOST = os.getenv("DB_HOST", "localhost") # Or your Docker service name e.g. 'db'
+DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
-# Table and collection names
-DEFAULT_COLLECTION_NAME = "political_documents" # Langchain uses this term, for pgvector it's a table
+# --- Table Names ---
+DATA_SOURCES_TABLE = "data_sources"
+CONTENT_CHUNKS_TABLE = "content_chunks"
 
 def get_db_connection():
     """Establishes a connection to the PostgreSQL database."""
     conn = psycopg2.connect(
-        dbname=DB_NAME,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        host=DB_HOST,
-        port=DB_PORT
+        dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT
     )
-    register_vector(conn) # Important: Register PGVector types
+    register_vector(conn)
     return conn
 
-class PGVectorStore:
-    def __init__(self, collection_name: str = DEFAULT_COLLECTION_NAME, embedding_dimension: int = 384):
-        """
-        Initializes the PGVectorStore.
-        :param collection_name: Name of the table to store documents.
-        :param embedding_dimension: Dimension of the embeddings (e.g., 384 for all-MiniLM-L6-v2).
-        """
-        self.collection_name = collection_name
+class CodeDocVectorStore:
+    """
+    Manages vector storage for code documentation, using a structured approach
+    with separate tables for data sources and content chunks.
+    """
+    def __init__(self, embedding_dimension: int = 384):
         self.embedding_dimension = embedding_dimension
-        self._ensure_table_exists()
+        self._ensure_schema_exists()
 
-    def _ensure_table_exists(self):
-        """Ensures the vector table exists in the database."""
+    def _ensure_schema_exists(self):
+        """Ensures the necessary tables and indexes exist in the database."""
         conn = None
         try:
             conn = get_db_connection()
             with conn.cursor() as cur:
-                # Enable pgvector extension if not already enabled
+                # Enable pgvector extension
                 cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
 
-                # Create table if it doesn't exist
-                # Using TEXT for content, JSONB for metadata
-                # Storing source and original document ID in metadata could be useful
-                create_table_query = f"""
-                CREATE TABLE IF NOT EXISTS {self.collection_name} (
+                # --- data_sources Table ---
+                # Tracks the origin of ingested content (e.g., a documentation website URL)
+                create_sources_table_query = f"""
+                CREATE TABLE IF NOT EXISTS {DATA_SOURCES_TABLE} (
                     id SERIAL PRIMARY KEY,
-                    content TEXT,
+                    source_url TEXT UNIQUE NOT NULL, -- The root URL or unique identifier for the source
+                    source_name TEXT, -- A human-readable name for the source
+                    last_crawled_at TIMESTAMPTZ,
                     metadata JSONB,
-                    embedding VECTOR({self.embedding_dimension})
+                    created_at TIMESTAMPTZ DEFAULT NOW()
                 );
                 """
-                cur.execute(create_table_query)
+                cur.execute(create_sources_table_query)
+                cur.execute(f"CREATE INDEX IF NOT EXISTS idx_source_url ON {DATA_SOURCES_TABLE} (source_url);")
 
-                # Optional: Create an index for faster similarity search
-                # Using HNSW index for cosine distance, suitable for many use cases
-                # The choice of index and its parameters (m, ef_construction) can be tuned
+                # --- content_chunks Table ---
+                # Stores the actual text/code chunks and their embeddings
+                create_chunks_table_query = f"""
+                CREATE TABLE IF NOT EXISTS {CONTENT_CHUNKS_TABLE} (
+                    id SERIAL PRIMARY KEY,
+                    source_id INTEGER NOT NULL REFERENCES {DATA_SOURCES_TABLE}(id) ON DELETE CASCADE,
+                    content TEXT NOT NULL,
+                    chunk_type TEXT NOT NULL, -- 'text' or 'code'
+                    embedding VECTOR({self.embedding_dimension}),
+                    metadata JSONB, -- For storing page_url, language, etc.
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                """
+                cur.execute(create_chunks_table_query)
+
+                # Create HNSW index for efficient similarity search
                 create_index_query = f"""
-                CREATE INDEX IF NOT EXISTS idx_{self.collection_name}_embedding
-                ON {self.collection_name}
+                CREATE INDEX IF NOT EXISTS idx_{CONTENT_CHUNKS_TABLE}_embedding
+                ON {CONTENT_CHUNKS_TABLE}
                 USING hnsw (embedding vector_cosine_ops);
                 """
-                # For IVFFlat, it would be:
-                # CREATE INDEX ON items USING ivfflat (embedding vector_l2_ops) WITH (lists = 100);
-                # Choose index based on dataset size, query speed needs, and accuracy trade-offs.
-                # HNSW is generally a good default.
                 cur.execute(create_index_query)
-                conn.commit()
-            print(f"Table '{self.collection_name}' ensured with HNSW index.")
-        except psycopg2.Error as e:
-            print(f"Database error ensuring table: {e}")
-            if conn:
-                conn.rollback() # Rollback on error
-            # Consider raising the exception or handling it more gracefully
-        finally:
-            if conn:
-                conn.close()
+                cur.execute(f"CREATE INDEX IF NOT EXISTS idx_chunk_type ON {CONTENT_CHUNKS_TABLE} (chunk_type);")
+                cur.execute(f"CREATE INDEX IF NOT EXISTS idx_source_id ON {CONTENT_CHUNKS_TABLE} (source_id);")
 
-    def add_documents(self, documents: List[Dict[str, Any]]):
+                conn.commit()
+            print("Database schema (data_sources, content_chunks) ensured successfully.")
+        except psycopg2.Error as e:
+            print(f"Database error ensuring schema: {e}")
+            if conn: conn.rollback()
+            raise
+        finally:
+            if conn: conn.close()
+
+    def add_data_source(self, url: str, name: Optional[str] = None, metadata: Optional[Dict] = None) -> int:
+        """Adds a new data source and returns its ID. If source exists, returns its ID."""
+        conn = None
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                # Upsert logic: Insert or do nothing if the URL already exists, then return the ID.
+                cur.execute(f"""
+                    INSERT INTO {DATA_SOURCES_TABLE} (source_url, source_name, metadata)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (source_url) DO NOTHING;
+                """, (url, name, Json(metadata) if metadata else None))
+
+                cur.execute(f"SELECT id FROM {DATA_SOURCES_TABLE} WHERE source_url = %s;", (url,))
+                source_id = cur.fetchone()[0]
+                conn.commit()
+                return source_id
+        except psycopg2.Error as e:
+            print(f"Database error adding data source: {e}")
+            if conn: conn.rollback()
+            raise
+        finally:
+            if conn: conn.close()
+
+    def add_content_chunks(self, source_id: int, chunks: List[Dict[str, Any]]):
         """
-        Adds multiple documents (chunks with their embeddings and metadata) to the store.
-        Each document in the list should be a dictionary with 'content', 'embedding', and 'metadata'.
+        Adds multiple content chunks associated with a data source.
+        Each chunk in the list should be a dict with 'content', 'embedding', 'metadata', and 'chunk_type'.
         """
         conn = None
         try:
             conn = get_db_connection()
             with conn.cursor() as cur:
-                # Prepare data for batch insertion
-                # data_to_insert should be a list of tuples: (content, metadata_json, embedding_vector)
                 data_to_insert = [
-                    (doc['content'], psycopg2.extras.Json(doc['metadata']), doc['embedding'])
-                    for doc in documents
+                    (source_id, doc['content'], doc.get('chunk_type', 'text'), doc['embedding'], Json(doc.get('metadata', {})))
+                    for doc in chunks
                 ]
 
                 insert_query = f"""
-                INSERT INTO {self.collection_name} (content, metadata, embedding)
+                INSERT INTO {CONTENT_CHUNKS_TABLE} (source_id, content, chunk_type, embedding, metadata)
                 VALUES %s;
                 """
                 execute_values(cur, insert_query, data_to_insert)
                 conn.commit()
-            print(f"Successfully added {len(documents)} documents to '{self.collection_name}'.")
+            print(f"Successfully added {len(chunks)} content chunks for source_id {source_id}.")
         except psycopg2.Error as e:
-            print(f"Database error adding documents: {e}")
-            if conn:
-                conn.rollback()
+            print(f"Database error adding content chunks: {e}")
+            if conn: conn.rollback()
+            raise
         finally:
-            if conn:
-                conn.close()
+            if conn: conn.close()
 
-    def similarity_search_with_scores(self, query_embedding: List[float], k: int = 5) -> List[Tuple[Dict[str, Any], float]]:
+    def similarity_search(self, query_embedding: List[float], k: int = 5, chunk_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Performs a similarity search against the vector store.
-        Returns k most similar documents and their similarity scores.
-        Note: pgvector uses distance (smaller is better). We convert to similarity score (0-1, larger is better).
-        For cosine distance: similarity = 1 - distance.
-        For L2 distance: similarity = 1 / (1 + distance). This needs careful scaling.
-        Assuming HNSW with vector_cosine_ops, so distance is cosine distance.
+        Performs a similarity search. Can optionally filter by chunk_type ('text' or 'code').
         """
         conn = None
-        results = []
         try:
             conn = get_db_connection()
             with conn.cursor() as cur:
-                # query_embedding needs to be formatted as a string for the SQL query
-                # but psycopg2 handles list-to-array conversion for vector type if registered.
-
-                # <-> is L2 distance
-                # <=> is cosine distance
-                # <#> is inner product (negative for similarity with normalized vectors)
-                # We used vector_cosine_ops for HNSW, so we should use <=> for cosine distance.
-                # Cosine distance is 0 for identical, 1 for orthogonal, 2 for opposite.
-                # Similarity = 1 - cosine_distance (ranges from -1 to 1, but for positive embeddings usually 0 to 1)
-
-                # If embeddings are normalized, (1 - cosine_distance) / 2 maps to [0,1]
-                # Or, more simply, if using inner product on normalized vectors, it's directly cosine similarity.
-                # Let's stick to cosine distance and convert.
-
-                search_query = f"""
-                SELECT id, content, metadata, embedding <=> %s AS distance
-                FROM {self.collection_name}
-                ORDER BY embedding <=> %s
-                LIMIT %s;
+                sql_query = f"""
+                SELECT
+                    c.id,
+                    c.content,
+                    c.metadata,
+                    c.chunk_type,
+                    s.source_url,
+                    s.source_name,
+                    c.embedding <=> %s AS distance
+                FROM {CONTENT_CHUNKS_TABLE} c
+                JOIN {DATA_SOURCES_TABLE} s ON c.source_id = s.id
                 """
-                cur.execute(search_query, (query_embedding, query_embedding, k))
-                fetched_rows = cur.fetchall()
 
-                for row in fetched_rows:
-                    doc_id, content, metadata, distance = row
-                    similarity_score = 1 - distance # For cosine distance
-                    document_data = {
-                        "id": doc_id,
-                        "content": content,
-                        "metadata": metadata
-                    }
-                    results.append((document_data, similarity_score))
+                params = [query_embedding, query_embedding]
 
-            print(f"Found {len(results)} similar documents.")
-            return results
+                if chunk_type:
+                    sql_query += " WHERE c.chunk_type = %s"
+                    params.append(chunk_type)
+
+                sql_query += " ORDER BY distance LIMIT %s;"
+                params.append(k)
+
+                cur.execute(sql_query, tuple(params))
+                rows = cur.fetchall()
+
+                results = []
+                for row in rows:
+                    results.append({
+                        "chunk_id": row[0],
+                        "content": row[1],
+                        "metadata": row[2],
+                        "chunk_type": row[3],
+                        "source_url": row[4],
+                        "source_name": row[5],
+                        "similarity_score": 1 - row[6] # Convert cosine distance to similarity
+                    })
+                return results
         except psycopg2.Error as e:
             print(f"Database error during similarity search: {e}")
-            return [] # Return empty list on error
+            raise
         finally:
-            if conn:
-                conn.close()
+            if conn: conn.close()
 
-# Example usage (for testing this file directly)
+    def list_data_sources(self) -> List[Dict[str, Any]]:
+        """Lists all ingested data sources."""
+        conn = None
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                cur.execute(f"SELECT id, source_url, source_name, created_at, last_crawled_at FROM {DATA_SOURCES_TABLE} ORDER BY created_at DESC;")
+                rows = cur.fetchall()
+                return [{"id": r[0], "url": r[1], "name": r[2], "created_at": r[3], "last_crawled": r[4]} for r in rows]
+        finally:
+            if conn: conn.close()
+
+    def delete_data_source(self, source_id: int) -> int:
+        """Deletes a data source and all its associated chunks."""
+        conn = None
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cur:
+                cur.execute(f"DELETE FROM {DATA_SOURCES_TABLE} WHERE id = %s;", (source_id,))
+                deleted_rows = cur.rowcount
+                conn.commit()
+                return deleted_rows
+        finally:
+            if conn: conn.close()
+
 if __name__ == '__main__':
-    # This assumes you have a PostgreSQL server running with pgvector enabled,
-    # and the database/user are set up as per .env or defaults.
-    # You might need to run `CREATE EXTENSION vector;` manually in your DB if the script fails.
-
-    print("Initializing PGVectorStore...")
-    # Make sure your .env file is in the rag_political_analyzer directory, or set env vars.
-    # Example: Create a .env file in rag_political_analyzer with:
-    # DB_NAME=my_rag_db
-    # DB_USER=my_user
-    # DB_PASSWORD=my_password
-    # DB_HOST=localhost
-    # DB_PORT=5432
-
+    print("Testing CodeDocVectorStore...")
     try:
-        vector_store = PGVectorStore(collection_name="test_collection", embedding_dimension=3) # Small dimension for test
-        print("PGVectorStore initialized.")
+        # Assumes .env file is in project root, and this script is in app/core
+        vector_store = CodeDocVectorStore(embedding_dimension=3) # Use low dim for test
+        print("Initialization and schema check complete.")
 
-        # Dummy data for testing
-        dummy_docs = [
-            {"content": "This is test document 1 about apples.", "embedding": [0.1, 0.2, 0.3], "metadata": {"source": "test1.txt", "page": 1}},
-            {"content": "Another test document, this one about bananas.", "embedding": [0.4, 0.5, 0.6], "metadata": {"source": "test2.txt", "page": 1}},
-            {"content": "Apples and oranges are fruits.", "embedding": [0.15, 0.25, 0.35], "metadata": {"source": "test3.txt", "page": 1}},
+        # Add a source
+        source_url = "https://example-docs.com"
+        source_id = vector_store.add_data_source(source_url, "Example Docs")
+        print(f"Added/found data source '{source_url}' with ID: {source_id}")
+
+        # Add chunks
+        test_chunks = [
+            {'content': 'This is a text chunk about installation.', 'chunk_type': 'text', 'embedding': [0.1, 0.2, 0.3], 'metadata': {'page': '/install'}},
+            {'content': 'def setup():\n  print("Setup code")', 'chunk_type': 'code', 'embedding': [0.7, 0.8, 0.9], 'metadata': {'page': '/install', 'language': 'python'}}
         ]
+        vector_store.add_content_chunks(source_id, test_chunks)
 
-        print("Adding dummy documents...")
-        vector_store.add_documents(dummy_docs)
+        # List sources
+        sources = vector_store.list_data_sources()
+        print("\nAvailable data sources:")
+        for s in sources:
+            print(f"- ID: {s['id']}, Name: {s['name']}, URL: {s['url']}")
 
-        print("Performing similarity search for 'apples' (embedding [0.1, 0.2, 0.3])...")
-        query_vec = [0.1, 0.2, 0.3]
-        similar_docs = vector_store.similarity_search_with_scores(query_vec, k=2)
+        # Similarity search
+        query_embedding = [0.1, 0.2, 0.4] # Similar to the 'text' chunk
+        results = vector_store.similarity_search(query_embedding, k=1)
+        print(f"\nSimilarity search results for query similar to 'text':")
+        print(json.dumps(results, indent=2))
 
-        if similar_docs:
-            print("\nFound similar documents:")
-            for doc, score in similar_docs:
-                print(f"  Content: {doc['content'][:50]}..., Metadata: {doc['metadata']}, Score: {score:.4f}")
-        else:
-            print("No similar documents found or error occurred.")
+        # Filtered search
+        results_code = vector_store.similarity_search(query_embedding, k=1, chunk_type='code')
+        print(f"\nSimilarity search results for query similar to 'text' (filtered for 'code' chunks):")
+        print(json.dumps(results_code, indent=2))
 
-    except psycopg2.OperationalError as e:
-        print(f"Could not connect to database. Ensure PostgreSQL is running and configured: {e}")
-        print("You might need to set up your .env file in the 'rag_political_analyzer' directory.")
+        # Delete source
+        deleted_count = vector_store.delete_data_source(source_id)
+        print(f"\nDeleted {deleted_count} data source(s).")
+
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-
-    # To clean up (optional, run manually in psql or a cleanup script):
-    # DROP TABLE IF EXISTS test_collection;
-    # DROP EXTENSION IF EXISTS vector; (if no other tables use it)
+        print(f"An error occurred during testing: {e}")
+        print("Please ensure your PostgreSQL server is running and .env is configured correctly.")
 ```
-
-And the `.env.example` file.

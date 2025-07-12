@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code RAG - Chat</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>CodeRAG</h1>
+        <nav>
+            <a href="index.html" class="active">Chat</a>
+            <a href="research.html">Deep Research</a>
+            <a href="manage.html">Manage Data</a>
+        </nav>
+    </header>
+
+    <div class="container">
+        <div id="chat-container">
+            <div id="chat-box">
+                <div class="chat-message bot-message">
+                    <p>Hello! I'm ready to answer your questions about the ingested code and documentation. What would you like to know?</p>
+                </div>
+            </div>
+            <div id="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Ask a question about your documents...">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+
+        <div class="context-section">
+            <button id="toggle-context-btn">Show Retrieved Context</button>
+            <div id="context-display" style="display: none; margin-top: 20px;">
+                <h3>Retrieved Context for Last Query:</h3>
+                <div id="context-content">
+                    <p>Context will be shown here...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
