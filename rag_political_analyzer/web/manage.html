@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Code RAG - Manage Data</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>CodeRAG</h1>
+        <nav>
+            <a href="index.html">Chat</a>
+            <a href="research.html">Deep Research</a>
+            <a href="manage.html" class="active">Manage Data</a>
+        </nav>
+    </header>
+
+    <div class="container">
+        <div class="form-section">
+            <h2>Manage Ingested Data Sources</h2>
+            <p>Here you can view and remove data sources that have been crawled and ingested into the system. Deleting a source will remove all of its associated content chunks.</p>
+            <button id="refresh-sources-btn">Refresh List</button>
+        </div>
+
+        <div id="status-message" class="status-message"></div>
+
+        <div id="sources-table-container">
+            <!-- Table will be populated by JavaScript -->
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
